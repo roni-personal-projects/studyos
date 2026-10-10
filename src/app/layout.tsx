@@ -17,6 +17,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: 'StudyOS — Personal Study Operating System',
   description: 'Exam-aware planning, syllabus tracking, spaced repetition, and error review.',
+  icons: {
+    icon: '/favicon.svg',
+  },
 };
 
 export default function RootLayout({
