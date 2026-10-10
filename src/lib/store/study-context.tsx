@@ -21,6 +21,23 @@ import {
 } from '../engine/revision';
 import { buildDailyPlan } from '../engine/planner';
 import { calculateProgress, OverallProgress } from '../engine/progress';
+import {
+  fetchStudyDataAction,
+  createSubjectAction,
+  deleteSubjectAction,
+  createChapterAction,
+  updateChapterStatusAction,
+  updateChapterConfidenceAction,
+  deleteChapterAction,
+  createExamAction,
+  markExamCompletedAction,
+  deleteExamAction,
+  completeRevisionAction,
+  createErrorAction,
+  markErrorReviewedAction,
+  deleteErrorAction,
+  resetToSampleDataAction,
+} from '@/app/actions/study';
 
 interface StudyContextType {
   subjects: Subject[];
@@ -33,19 +50,20 @@ interface StudyContextType {
   todayStr: string;
   progress: OverallProgress;
   isLoaded: boolean;
+  isSyncing: boolean;
 
   // Actions
   setAvailableMinutes: (minutes: number) => void;
-  addSubject: (name: string, icon?: string) => void;
-  deleteSubject: (subjectId: string) => void;
-  addChapter: (subjectId: string, name: string) => void;
-  updateChapterStatus: (chapterId: string, status: ChapterStatus) => void;
-  updateChapterConfidence: (chapterId: string, confidence: number) => void;
-  deleteChapter: (chapterId: string) => void;
-  addExam: (name: string, examDate: string, subjectIds: string[], notes?: string) => void;
-  markExamCompleted: (examId: string) => void;
-  deleteExam: (examId: string) => void;
-  completeRevision: (revisionId: string, difficulty: RevisionDifficulty) => void;
+  addSubject: (name: string, icon?: string) => Promise<void>;
+  deleteSubject: (subjectId: string) => Promise<void>;
+  addChapter: (subjectId: string, name: string) => Promise<void>;
+  updateChapterStatus: (chapterId: string, status: ChapterStatus) => Promise<void>;
+  updateChapterConfidence: (chapterId: string, confidence: number) => Promise<void>;
+  deleteChapter: (chapterId: string) => Promise<void>;
+  addExam: (name: string, examDate: string, subjectIds: string[], notes?: string) => Promise<void>;
+  markExamCompleted: (examId: string) => Promise<void>;
+  deleteExam: (examId: string) => Promise<void>;
+  completeRevision: (revisionId: string, difficulty: RevisionDifficulty) => Promise<void>;
   addError: (data: {
     chapterId: string;
     mistakeType: MistakeType;
@@ -53,12 +71,12 @@ interface StudyContextType {
     question?: string;
     correctMethod?: string;
     lessonLearned?: string;
-  }) => void;
-  markErrorReviewed: (errorId: string) => void;
-  deleteError: (errorId: string) => void;
+  }) => Promise<void>;
+  markErrorReviewed: (errorId: string) => Promise<void>;
+  deleteError: (errorId: string) => Promise<void>;
   completeTask: (taskId: string) => void;
   skipTask: (taskId: string) => void;
-  resetToSampleData: () => void;
+  resetToSampleData: () => Promise<void>;
 }
 
 const StudyContext = createContext<StudyContextType | undefined>(undefined);
@@ -67,6 +85,7 @@ const STORAGE_KEY = 'study_os_store_v1';
 
 export function StudyProvider({ children }: { children: React.ReactNode }) {
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [availableMinutes, setAvailableMinutesState] = useState<number>(90);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -78,49 +97,73 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
 
   const [todayStr, setTodayStr] = useState<string>('');
 
-  // Initialize from localStorage or Seed Data
+  // Initial Data Fetch from Neon Postgres (with fallback to localStorage/seed)
   useEffect(() => {
     const now = new Date();
     const currentTodayStr = formatCalendarDate(now);
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setTodayStr(currentTodayStr);
 
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setSubjects(parsed.subjects || []);
-        setChapters(parsed.chapters || []);
-        setExams(parsed.exams || []);
-        setRevisions(parsed.revisions || []);
-        setErrors(parsed.errors || []);
-        if (parsed.availableMinutes) {
-          setAvailableMinutesState(parsed.availableMinutes);
+    async function loadData() {
+      try {
+        setIsSyncing(true);
+        // Try fetching from Neon Postgres
+        const neonData = await fetchStudyDataAction();
+        if (neonData) {
+          setSubjects(neonData.subjects);
+          setChapters(neonData.chapters);
+          setExams(neonData.exams);
+          setRevisions(neonData.revisions);
+          setErrors(neonData.errors);
+          setIsLoaded(true);
+          return;
         }
-        if (parsed.completedTaskIds) {
-          setCompletedTaskIds(new Set(parsed.completedTaskIds));
+      } catch (err) {
+        console.warn('Neon connection failed or offline, loading local store:', err);
+      } finally {
+        setIsSyncing(false);
+      }
+
+      // Fallback: localStorage or Seed Data
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setSubjects(parsed.subjects || []);
+          setChapters(parsed.chapters || []);
+          setExams(parsed.exams || []);
+          setRevisions(parsed.revisions || []);
+          setErrors(parsed.errors || []);
+          if (parsed.availableMinutes) {
+            setAvailableMinutesState(parsed.availableMinutes);
+          }
+          if (parsed.completedTaskIds) {
+            setCompletedTaskIds(new Set(parsed.completedTaskIds));
+          }
+        } else {
+          const seed = getSeedData(now);
+          setSubjects(seed.subjects);
+          setChapters(seed.chapters);
+          setExams(seed.exams);
+          setRevisions(seed.revisions);
+          setErrors(seed.errors);
         }
-      } else {
-        const seed = getSeedData(new Date());
+      } catch {
+        const seed = getSeedData(now);
         setSubjects(seed.subjects);
         setChapters(seed.chapters);
         setExams(seed.exams);
         setRevisions(seed.revisions);
         setErrors(seed.errors);
+      } finally {
+        setIsLoaded(true);
       }
-    } catch {
-      const seed = getSeedData(new Date());
-      setSubjects(seed.subjects);
-      setChapters(seed.chapters);
-      setExams(seed.exams);
-      setRevisions(seed.revisions);
-      setErrors(seed.errors);
-    } finally {
-      setIsLoaded(true);
     }
+
+    loadData();
   }, []);
 
-  // Persist to localStorage on change
+  // Backup cache to localStorage on state change
   useEffect(() => {
     if (!isLoaded) return;
     try {
@@ -201,26 +244,43 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
     setAvailableMinutesState(Math.max(15, Math.min(720, minutes)));
   };
 
-  const addSubject = (name: string, icon?: string) => {
-    const newSubject: Subject = {
-      id: `sub-${Date.now()}`,
+  // SUBJECT ACTIONS
+  const addSubject = async (name: string, icon?: string) => {
+    const tempId = `sub-temp-${Date.now()}`;
+    const optimisticSubject: Subject = {
+      id: tempId,
       user_id: 'default-user',
       name: name.trim(),
       icon: icon || 'BookOpen',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    setSubjects((prev) => [...prev, newSubject]);
+    setSubjects((prev) => [...prev, optimisticSubject]);
+
+    try {
+      const created = await createSubjectAction(name, icon);
+      setSubjects((prev) => prev.map((s) => (s.id === tempId ? created : s)));
+    } catch (err) {
+      console.error('Failed to save subject to Neon:', err);
+    }
   };
 
-  const deleteSubject = (subjectId: string) => {
+  const deleteSubject = async (subjectId: string) => {
     setSubjects((prev) => prev.filter((s) => s.id !== subjectId));
     setChapters((prev) => prev.filter((c) => c.subject_id !== subjectId));
+
+    try {
+      await deleteSubjectAction(subjectId);
+    } catch (err) {
+      console.error('Failed to delete subject from Neon:', err);
+    }
   };
 
-  const addChapter = (subjectId: string, name: string) => {
-    const newChapter: Chapter = {
-      id: `chap-${Date.now()}`,
+  // CHAPTER ACTIONS
+  const addChapter = async (subjectId: string, name: string) => {
+    const tempId = `chap-temp-${Date.now()}`;
+    const optimisticChapter: Chapter = {
+      id: tempId,
       subject_id: subjectId,
       name: name.trim(),
       status: 'Not Started',
@@ -230,10 +290,17 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    setChapters((prev) => [...prev, newChapter]);
+    setChapters((prev) => [...prev, optimisticChapter]);
+
+    try {
+      const created = await createChapterAction(subjectId, name);
+      setChapters((prev) => prev.map((c) => (c.id === tempId ? created : c)));
+    } catch (err) {
+      console.error('Failed to save chapter to Neon:', err);
+    }
   };
 
-  const updateChapterStatus = (chapterId: string, status: ChapterStatus) => {
+  const updateChapterStatus = async (chapterId: string, status: ChapterStatus) => {
     const now = new Date();
     setChapters((prev) =>
       prev.map((c) => {
@@ -245,32 +312,59 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       })
     );
 
-    // If marked Completed, generate initial revision schedule (+1, +3, +7, +14, +30)
+    // Optimistically schedule revisions if completed
     if (status === 'Completed') {
-      const newRevs = generateInitialRevisions(chapterId, now).map((r, i) => ({
+      const tempRevs = generateInitialRevisions(chapterId, now).map((r, i) => ({
         ...r,
         id: `rev-${chapterId}-${i}-${Date.now()}`,
         created_at: now.toISOString(),
       }));
-      setRevisions((prev) => [...prev, ...newRevs]);
+      setRevisions((prev) => [...prev, ...tempRevs]);
+    }
+
+    try {
+      const result = await updateChapterStatusAction(chapterId, status);
+      if (status === 'Completed' && result.newRevisions.length > 0) {
+        setRevisions((prev) => [
+          ...prev.filter((r) => r.chapter_id !== chapterId || !r.id.startsWith('rev-')),
+          ...result.newRevisions,
+        ]);
+      }
+    } catch (err) {
+      console.error('Failed to update chapter status in Neon:', err);
     }
   };
 
-  const updateChapterConfidence = (chapterId: string, confidence: number) => {
+  const updateChapterConfidence = async (chapterId: string, confidence: number) => {
+    const clamped = Math.max(1, Math.min(5, confidence));
     setChapters((prev) =>
-      prev.map((c) => (c.id === chapterId ? { ...c, confidence: Math.max(1, Math.min(5, confidence)) } : c))
+      prev.map((c) => (c.id === chapterId ? { ...c, confidence: clamped } : c))
     );
+
+    try {
+      await updateChapterConfidenceAction(chapterId, clamped);
+    } catch (err) {
+      console.error('Failed to update confidence in Neon:', err);
+    }
   };
 
-  const deleteChapter = (chapterId: string) => {
+  const deleteChapter = async (chapterId: string) => {
     setChapters((prev) => prev.filter((c) => c.id !== chapterId));
     setRevisions((prev) => prev.filter((r) => r.chapter_id !== chapterId));
     setErrors((prev) => prev.filter((e) => e.chapter_id !== chapterId));
+
+    try {
+      await deleteChapterAction(chapterId);
+    } catch (err) {
+      console.error('Failed to delete chapter from Neon:', err);
+    }
   };
 
-  const addExam = (name: string, examDate: string, subjectIds: string[], notes?: string) => {
-    const newExam: Exam = {
-      id: `exam-${Date.now()}`,
+  // EXAM ACTIONS
+  const addExam = async (name: string, examDate: string, subjectIds: string[], notes?: string) => {
+    const tempId = `exam-temp-${Date.now()}`;
+    const optimisticExam: Exam = {
+      id: tempId,
       user_id: 'default-user',
       name: name.trim(),
       exam_date: examDate,
@@ -280,22 +374,42 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       updated_at: new Date().toISOString(),
       subject_ids: subjectIds,
     };
-    setExams((prev) => [...prev, newExam]);
+    setExams((prev) => [...prev, optimisticExam]);
+
+    try {
+      const created = await createExamAction(name, examDate, subjectIds, notes);
+      setExams((prev) => prev.map((e) => (e.id === tempId ? created : e)));
+    } catch (err) {
+      console.error('Failed to save exam to Neon:', err);
+    }
   };
 
-  const markExamCompleted = (examId: string) => {
+  const markExamCompleted = async (examId: string) => {
     setExams((prev) =>
       prev.map((e) =>
         e.id === examId ? { ...e, status: 'Completed', updated_at: new Date().toISOString() } : e
       )
     );
+
+    try {
+      await markExamCompletedAction(examId);
+    } catch (err) {
+      console.error('Failed to mark exam completed in Neon:', err);
+    }
   };
 
-  const deleteExam = (examId: string) => {
+  const deleteExam = async (examId: string) => {
     setExams((prev) => prev.filter((e) => e.id !== examId));
+
+    try {
+      await deleteExamAction(examId);
+    } catch (err) {
+      console.error('Failed to delete exam from Neon:', err);
+    }
   };
 
-  const completeRevision = (revisionId: string, difficulty: RevisionDifficulty) => {
+  // REVISION ACTIONS
+  const completeRevision = async (revisionId: string, difficulty: RevisionDifficulty) => {
     const now = new Date();
     let updatedTargetRev: Revision | null = null;
 
@@ -313,11 +427,10 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       })
     );
 
-    // Adaptive interval: create next revision step based on rating
     if (updatedTargetRev) {
       const nextInterval = calculateNextInterval((updatedTargetRev as Revision).interval_days, difficulty);
       const nextDate = addDays(now, nextInterval);
-      const nextRev: Revision = {
+      const tempNextRev: Revision = {
         id: `rev-next-${Date.now()}`,
         chapter_id: (updatedTargetRev as Revision).chapter_id,
         scheduled_for: formatCalendarDate(nextDate),
@@ -326,11 +439,24 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
         difficulty: null,
         created_at: now.toISOString(),
       };
-      setRevisions((prev) => [...prev, nextRev]);
+      setRevisions((prev) => [...prev, tempNextRev]);
+    }
+
+    try {
+      const { completedRevision, nextRevision } = await completeRevisionAction(revisionId, difficulty);
+      setRevisions((prev) =>
+        prev
+          .map((r) => (r.id === revisionId ? completedRevision : r))
+          .filter((r) => !r.id.startsWith('rev-next-'))
+          .concat(nextRevision)
+      );
+    } catch (err) {
+      console.error('Failed to complete revision in Neon:', err);
     }
   };
 
-  const addError = (data: {
+  // ERROR ACTIONS
+  const addError = async (data: {
     chapterId: string;
     mistakeType: MistakeType;
     whatWentWrong: string;
@@ -338,8 +464,9 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
     correctMethod?: string;
     lessonLearned?: string;
   }) => {
-    const newError: ErrorEntry = {
-      id: `err-${Date.now()}`,
+    const tempId = `err-temp-${Date.now()}`;
+    const optimisticError: ErrorEntry = {
+      id: tempId,
       chapter_id: data.chapterId,
       question: data.question || null,
       mistake_type: data.mistakeType,
@@ -351,19 +478,38 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    setErrors((prev) => [...prev, newError]);
+    setErrors((prev) => [...prev, optimisticError]);
+
+    try {
+      const created = await createErrorAction(data);
+      setErrors((prev) => prev.map((e) => (e.id === tempId ? created : e)));
+    } catch (err) {
+      console.error('Failed to save mistake to Neon:', err);
+    }
   };
 
-  const markErrorReviewed = (errorId: string) => {
+  const markErrorReviewed = async (errorId: string) => {
     setErrors((prev) =>
       prev.map((e) =>
         e.id === errorId ? { ...e, reviewed_at: new Date().toISOString() } : e
       )
     );
+
+    try {
+      await markErrorReviewedAction(errorId);
+    } catch (err) {
+      console.error('Failed to mark mistake reviewed in Neon:', err);
+    }
   };
 
-  const deleteError = (errorId: string) => {
+  const deleteError = async (errorId: string) => {
     setErrors((prev) => prev.filter((e) => e.id !== errorId));
+
+    try {
+      await deleteErrorAction(errorId);
+    } catch (err) {
+      console.error('Failed to delete mistake from Neon:', err);
+    }
   };
 
   const completeTask = (taskId: string) => {
@@ -382,16 +528,35 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const resetToSampleData = () => {
-    const seed = getSeedData(new Date());
-    setSubjects(seed.subjects);
-    setChapters(seed.chapters);
-    setExams(seed.exams);
-    setRevisions(seed.revisions);
-    setErrors(seed.errors);
-    setCompletedTaskIds(new Set());
-    setSkippedTaskIds(new Set());
-    setAvailableMinutesState(90);
+  const resetToSampleData = async () => {
+    try {
+      setIsSyncing(true);
+      const neonData = await resetToSampleDataAction();
+      if (neonData) {
+        setSubjects(neonData.subjects);
+        setChapters(neonData.chapters);
+        setExams(neonData.exams);
+        setRevisions(neonData.revisions);
+        setErrors(neonData.errors);
+        setCompletedTaskIds(new Set());
+        setSkippedTaskIds(new Set());
+        setAvailableMinutesState(90);
+      }
+    } catch (err) {
+      console.error('Failed to reset sample data in Neon:', err);
+      // Fallback
+      const seed = getSeedData(new Date());
+      setSubjects(seed.subjects);
+      setChapters(seed.chapters);
+      setExams(seed.exams);
+      setRevisions(seed.revisions);
+      setErrors(seed.errors);
+      setCompletedTaskIds(new Set());
+      setSkippedTaskIds(new Set());
+      setAvailableMinutesState(90);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   return (
@@ -407,6 +572,7 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
         todayStr,
         progress,
         isLoaded,
+        isSyncing,
         setAvailableMinutes,
         addSubject,
         deleteSubject,
