@@ -21,7 +21,7 @@ import {
 
 const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
 
-async function ensureDefaultUser() {
+async function ensureNeonSchema() {
   const sql = getDb();
   if (!sql) return;
 
@@ -30,6 +30,10 @@ async function ensureDefaultUser() {
     VALUES (${DEFAULT_USER_ID}, 'student@studyos.local', 'Student')
     ON CONFLICT (id) DO NOTHING;
   `;
+
+  // Safely ensure new schema columns exist in Neon
+  await sql`ALTER TABLE chapters ADD COLUMN IF NOT EXISTS checklist_progress JSONB DEFAULT '[]'::jsonb;`;
+  await sql`ALTER TABLE exams ADD COLUMN IF NOT EXISTS chapter_ids JSONB DEFAULT '[]'::jsonb;`;
 }
 
 /**
@@ -42,7 +46,7 @@ export async function fetchStudyDataAction() {
     return null;
   }
 
-  await ensureDefaultUser();
+  await ensureNeonSchema();
 
   const subjectsRaw = await sql`
     SELECT id, user_id, name, icon, created_at, updated_at
@@ -57,13 +61,13 @@ export async function fetchStudyDataAction() {
   }
 
   const chaptersRaw = await sql`
-    SELECT id, subject_id, name, status, confidence, completed_at, position, created_at, updated_at
+    SELECT id, subject_id, name, status, confidence, completed_at, position, checklist_progress, created_at, updated_at
     FROM chapters
     ORDER BY position ASC, created_at ASC
   `;
 
   const examsRaw = await sql`
-    SELECT id, user_id, name, to_char(exam_date, 'YYYY-MM-DD') as exam_date, status, notes, created_at, updated_at
+    SELECT id, user_id, name, to_char(exam_date, 'YYYY-MM-DD') as exam_date, status, notes, chapter_ids, created_at, updated_at
     FROM exams
     ORDER BY exam_date ASC
   `;
@@ -102,15 +106,7 @@ export async function fetchStudyDataAction() {
     created_at: e.created_at,
     updated_at: e.updated_at,
     subject_ids: examSubjectsMap.get(e.id) || [],
-  }));
-
-  const subjects: Subject[] = subjectsRaw.map((s) => ({
-    id: s.id,
-    user_id: s.user_id || DEFAULT_USER_ID,
-    name: s.name,
-    icon: s.icon,
-    created_at: s.created_at,
-    updated_at: s.updated_at,
+    chapter_ids: Array.isArray(e.chapter_ids) ? e.chapter_ids : [],
   }));
 
   const chapters: Chapter[] = chaptersRaw.map((c) => ({
@@ -121,8 +117,18 @@ export async function fetchStudyDataAction() {
     confidence: c.confidence,
     completed_at: c.completed_at,
     position: c.position,
+    checklist_progress: Array.isArray(c.checklist_progress) ? c.checklist_progress : [],
     created_at: c.created_at,
     updated_at: c.updated_at,
+  }));
+
+  const subjects: Subject[] = subjectsRaw.map((s) => ({
+    id: s.id,
+    user_id: s.user_id || DEFAULT_USER_ID,
+    name: s.name,
+    icon: s.icon,
+    created_at: s.created_at,
+    updated_at: s.updated_at,
   }));
 
   const revisions: Revision[] = revisionsRaw.map((r) => ({
@@ -235,7 +241,7 @@ async function seedInitialDataToNeon() {
 export async function createSubjectAction(name: string, icon?: string) {
   const sql = getDb();
   if (!sql) throw new Error('Database not connected');
-  await ensureDefaultUser();
+  await ensureNeonSchema();
 
   const [row] = await sql`
     INSERT INTO subjects (name, icon, user_id)
@@ -344,22 +350,25 @@ export async function deleteChapterAction(chapterId: string) {
 }
 
 /**
- * Create an Exam in Neon with linked subjects.
+ * Create an Exam in Neon with linked subjects and optional specific chapter IDs.
  */
 export async function createExamAction(
   name: string,
   examDate: string,
   subjectIds: string[],
-  notes?: string
+  notes?: string,
+  chapterIds?: string[]
 ) {
   const sql = getDb();
   if (!sql) throw new Error('Database not connected');
-  await ensureDefaultUser();
+  await ensureNeonSchema();
+
+  const chaptersJson = JSON.stringify(chapterIds || []);
 
   const [examRow] = await sql`
-    INSERT INTO exams (name, exam_date, notes, status, user_id)
-    VALUES (${name.trim()}, ${examDate}, ${notes || null}, 'Upcoming', ${DEFAULT_USER_ID})
-    RETURNING id, user_id, name, to_char(exam_date, 'YYYY-MM-DD') as exam_date, status, notes, created_at, updated_at
+    INSERT INTO exams (name, exam_date, notes, status, user_id, chapter_ids)
+    VALUES (${name.trim()}, ${examDate}, ${notes || null}, 'Upcoming', ${DEFAULT_USER_ID}, ${chaptersJson}::jsonb)
+    RETURNING id, user_id, name, to_char(exam_date, 'YYYY-MM-DD') as exam_date, status, notes, chapter_ids, created_at, updated_at
   `;
 
   for (const subId of subjectIds) {
@@ -373,7 +382,59 @@ export async function createExamAction(
   return {
     ...examRow,
     subject_ids: subjectIds,
+    chapter_ids: Array.isArray(examRow.chapter_ids) ? examRow.chapter_ids : chapterIds || [],
   } as Exam;
+}
+
+/**
+ * Update Chapter Checklist Progress and Status in Neon.
+ * Automatically schedules spaced repetition if status transition is Completed.
+ */
+export async function updateChapterChecklistAction(
+  chapterId: string,
+  checklistProgress: string[],
+  status: ChapterStatus
+) {
+  const sql = getDb();
+  if (!sql) throw new Error('Database not connected');
+  await ensureNeonSchema();
+
+  const progressJson = JSON.stringify(checklistProgress);
+  const completedAt = status === 'Completed' ? new Date() : null;
+
+  const [row] = await sql`
+    UPDATE chapters
+    SET checklist_progress = ${progressJson}::jsonb,
+        status = ${status},
+        completed_at = ${completedAt},
+        updated_at = now()
+    WHERE id = ${chapterId}
+    RETURNING id, subject_id, name, status, confidence, completed_at, position, checklist_progress, created_at, updated_at
+  `;
+
+  const newRevisions: Revision[] = [];
+  if (status === 'Completed') {
+    const existingRevs = await sql`SELECT id FROM revisions WHERE chapter_id = ${chapterId}`;
+    if (existingRevs.length === 0) {
+      const schedules = generateInitialRevisions(chapterId, new Date());
+      for (const s of schedules) {
+        const [insertedRev] = await sql`
+          INSERT INTO revisions (chapter_id, scheduled_for, interval_days)
+          VALUES (${chapterId}, ${s.scheduled_for}, ${s.interval_days})
+          RETURNING id, chapter_id, to_char(scheduled_for, 'YYYY-MM-DD') as scheduled_for, completed_at, interval_days, difficulty, created_at
+        `;
+        newRevisions.push(insertedRev as Revision);
+      }
+    }
+  }
+
+  return {
+    chapter: {
+      ...row,
+      checklist_progress: Array.isArray(row.checklist_progress) ? row.checklist_progress : checklistProgress,
+    } as Chapter,
+    newRevisions,
+  };
 }
 
 /**

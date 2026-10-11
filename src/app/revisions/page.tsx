@@ -44,7 +44,7 @@ export default function RevisionsPage() {
             <RotateCcw className="h-6 w-6 text-zinc-900 dark:text-zinc-100" />
             Spaced Repetition Queue
           </h1>
-          <p className="text-xs text-zinc-500 mt-1">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
             Automatic recall testing scheduled at +1, +3, +7, +14, and +30 days after chapter completion.
           </p>
         </div>
@@ -56,12 +56,18 @@ export default function RevisionsPage() {
           onClick={() => setFilter('Due')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
             filter === 'Due'
-              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-              : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400'
+              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs'
+              : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/80'
           }`}
         >
           <span>Due Today &amp; Overdue</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20 dark:bg-black/20 font-mono">
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-medium ${
+              filter === 'Due'
+                ? 'bg-white/20 text-white dark:bg-black/15 dark:text-zinc-900'
+                : 'bg-zinc-200/80 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300'
+            }`}
+          >
             {dueRevisions.length}
           </span>
         </button>
@@ -70,12 +76,18 @@ export default function RevisionsPage() {
           onClick={() => setFilter('Upcoming')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
             filter === 'Upcoming'
-              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-              : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400'
+              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs'
+              : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/80'
           }`}
         >
           <span>Upcoming</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-zinc-200 dark:bg-zinc-700 font-mono">
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-medium ${
+              filter === 'Upcoming'
+                ? 'bg-white/20 text-white dark:bg-black/15 dark:text-zinc-900'
+                : 'bg-zinc-200/80 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300'
+            }`}
+          >
             {upcomingRevisions.length}
           </span>
         </button>
@@ -84,12 +96,18 @@ export default function RevisionsPage() {
           onClick={() => setFilter('Completed')}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
             filter === 'Completed'
-              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
-              : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400'
+              ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs'
+              : 'bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700/80'
           }`}
         >
           <span>Completed History</span>
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-zinc-200 dark:bg-zinc-700 font-mono">
+          <span
+            className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono font-medium ${
+              filter === 'Completed'
+                ? 'bg-white/20 text-white dark:bg-black/15 dark:text-zinc-900'
+                : 'bg-zinc-200/80 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-300'
+            }`}
+          >
             {completedRevisions.length}
           </span>
         </button>
@@ -105,7 +123,7 @@ export default function RevisionsPage() {
               ? 'No upcoming revisions scheduled'
               : 'No revision history recorded yet'}
           </h3>
-          <p className="text-xs text-zinc-500 max-w-sm mx-auto mt-1">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 max-w-sm mx-auto mt-1">
             Complete syllabus chapters to automatically populate spaced repetition revisions.
           </p>
         </Card>
@@ -123,13 +141,13 @@ export default function RevisionsPage() {
                 className="p-4 rounded-xl border border-zinc-200/80 bg-white dark:border-zinc-800 dark:bg-zinc-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-zinc-300 dark:hover:border-zinc-700 transition-colors"
               >
                 <div className="flex items-start gap-3 min-w-0">
-                  <div className="p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800 mt-0.5">
+                  <div className="p-2 rounded-lg bg-zinc-100 dark:bg-zinc-800 mt-0.5 flex-shrink-0">
                     <RotateCcw className="h-4 w-4 text-indigo-500" />
                   </div>
 
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-semibold text-zinc-500">
+                      <span className="text-xs font-semibold text-zinc-600 dark:text-zinc-300">
                         {subject?.name}
                       </span>
                       <span className="text-xs text-zinc-400">•</span>
@@ -156,12 +174,12 @@ export default function RevisionsPage() {
                       {chapter?.name || 'Unknown Chapter'}
                     </h4>
 
-                    <p className="text-xs text-zinc-500 flex items-center gap-1.5 mt-1">
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5 mt-1">
                       <Calendar className="h-3.5 w-3.5" />
                       {isCompleted ? (
                         <span>Completed on {rev.completed_at?.split('T')[0]}</span>
                       ) : (
-                        <span className={isOverdue ? 'text-rose-500 font-semibold' : ''}>
+                        <span className={isOverdue ? 'text-rose-500 dark:text-rose-400 font-semibold' : ''}>
                           Scheduled for {rev.scheduled_for} {isOverdue ? '(Overdue)' : ''}
                         </span>
                       )}

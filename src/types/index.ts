@@ -48,6 +48,7 @@ export interface Chapter {
   confidence: number; // 1 to 5
   completed_at: string | null;
   position: number;
+  checklist_progress?: string[]; // Array of completed checkpoint IDs
   created_at: string;
   updated_at: string;
 }
@@ -62,6 +63,7 @@ export interface Exam {
   created_at: string;
   updated_at: string;
   subject_ids?: string[]; // linked subject IDs
+  chapter_ids?: string[]; // linked chapter IDs specifically for this exam
 }
 
 export interface ExamSubject {

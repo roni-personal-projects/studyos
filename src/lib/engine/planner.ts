@@ -7,6 +7,7 @@ import {
   TaskType,
 } from '@/types';
 import { parseCalendarDate } from './revision';
+import { getSubjectChecklist } from './checklists';
 
 export interface PlannerInput {
   userId: string;
@@ -23,6 +24,7 @@ export interface CandidateTask {
   id?: string;
   userId: string;
   chapterId: string | null;
+  checkpointId?: string | null;
   revisionId: string | null;
   title: string;
   taskType: TaskType;
@@ -80,6 +82,7 @@ export function calculateWeaknessScore(confidence: number): number {
 
 /**
  * Deterministic candidate task generator and ranker.
+ * Checkpoint-driven, exam-aware, and cognitive load balanced.
  */
 export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
   const {
@@ -98,18 +101,40 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
   // Active upcoming exams
   const activeExams = exams.filter((e) => e.status === 'Upcoming');
 
-  // Map each subject to its nearest upcoming exam urgency
+  // Map each specific chapter (and fallback to subject) to its nearest upcoming exam urgency
+  const chapterExamUrgency = new Map<string, { urgency: number; days: number; examName: string }>();
   const subjectExamUrgency = new Map<string, { urgency: number; days: number; examName: string }>();
+
   for (const exam of activeExams) {
     const days = getDaysUntilExam(todayDateStr, exam.exam_date);
     if (days < 0) continue; // exam has passed
     const urgency = calculateExamUrgency(days);
 
-    const linkedSubjectIds = exam.subject_ids || [];
-    for (const subId of linkedSubjectIds) {
+    // Track subject-level urgency
+    for (const subId of exam.subject_ids || []) {
       const existing = subjectExamUrgency.get(subId);
       if (!existing || urgency > existing.urgency) {
         subjectExamUrgency.set(subId, { urgency, days, examName: exam.name });
+      }
+    }
+
+    // If exam specifies chapters explicitly, prioritize those exact chapters
+    if (exam.chapter_ids && exam.chapter_ids.length > 0) {
+      for (const chapId of exam.chapter_ids) {
+        const existing = chapterExamUrgency.get(chapId);
+        if (!existing || urgency > existing.urgency) {
+          chapterExamUrgency.set(chapId, { urgency, days, examName: exam.name });
+        }
+      }
+    } else {
+      // Fallback: if no chapters specified, all chapters of covered subjects are considered
+      for (const subId of exam.subject_ids || []) {
+        for (const chap of chapters.filter((c) => c.subject_id === subId)) {
+          const existing = chapterExamUrgency.get(chap.id);
+          if (!existing || urgency > existing.urgency) {
+            chapterExamUrgency.set(chap.id, { urgency, days, examName: exam.name });
+          }
+        }
       }
     }
   }
@@ -125,7 +150,7 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
 
   const candidates: CandidateTask[] = [];
 
-  // 1. Revision tasks due
+  // 1. Spaced Repetition tasks due
   for (const rev of revisions) {
     if (rev.completed_at) continue;
     if (rev.scheduled_for > todayDateStr) continue; // Not due yet
@@ -135,10 +160,10 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
     const subject = subjectMap.get(chapter.subject_id);
     const subName = subject?.name || 'General';
 
-    const examInfo = subjectExamUrgency.get(chapter.subject_id);
-    const examBonus = examInfo ? examInfo.urgency : 0;
+    const examInfo = chapterExamUrgency.get(chapter.id) || subjectExamUrgency.get(chapter.subject_id);
+    const examBonus = examInfo ? examInfo.urgency * 1.1 : 0;
     const isOverdue = rev.scheduled_for < todayDateStr;
-    const baseRevUrgency = isOverdue ? 180 : 140;
+    const baseRevUrgency = isOverdue ? 190 : 150;
     const weakness = calculateWeaknessScore(chapter.confidence);
 
     const score = baseRevUrgency + examBonus + weakness;
@@ -146,16 +171,17 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
     if (examInfo) {
       reasonParts.push(`${examInfo.examName} in ${examInfo.days}d`);
     }
-    reasonParts.push(isOverdue ? 'Overdue revision' : 'Revision due today');
+    reasonParts.push(isOverdue ? 'Overdue retrieval practice' : 'Spaced revision due today');
     if (chapter.confidence <= 2) {
       reasonParts.push(`Low confidence (${chapter.confidence}/5)`);
     }
 
     candidates.push({
+      id: `task-rev-${rev.id}`,
       userId,
       chapterId: chapter.id,
       revisionId: rev.id,
-      title: `Revise: ${chapter.name}`,
+      title: `Active Recall Revision: ${chapter.name}`,
       taskType: 'Revision',
       estimatedMinutes: 25,
       priorityScore: score,
@@ -165,30 +191,30 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
     });
   }
 
-  // 2. Error review tasks (for chapters with 2+ unreviewed errors or upcoming exams)
+  // 2. Error review tasks (for chapters with unreviewed errors or upcoming exams)
   for (const [chapId, errCount] of unreviewedErrorsByChapter.entries()) {
     const chapter = chapterMap.get(chapId);
     if (!chapter) continue;
     const subject = subjectMap.get(chapter.subject_id);
     const subName = subject?.name || 'General';
-    const examInfo = subjectExamUrgency.get(chapter.subject_id);
+    const examInfo = chapterExamUrgency.get(chapter.id) || subjectExamUrgency.get(chapter.subject_id);
 
-    // Prioritize if exam is approaching or high error count
-    const examBonus = examInfo ? examInfo.urgency * 1.1 : 0;
-    const errorBonus = Math.min(100, errCount * 20);
-    const score = 100 + examBonus + errorBonus;
+    const examBonus = examInfo ? examInfo.urgency * 1.15 : 0;
+    const errorBonus = Math.min(120, errCount * 25);
+    const score = 110 + examBonus + errorBonus;
 
     const reasonParts: string[] = [];
     if (examInfo) {
       reasonParts.push(`${examInfo.examName} in ${examInfo.days}d`);
     }
-    reasonParts.push(`${errCount} unresolved mistake${errCount > 1 ? 's' : ''}`);
+    reasonParts.push(`${errCount} logged mistake${errCount > 1 ? 's' : ''} to repair`);
 
     candidates.push({
+      id: `task-err-${chapId}`,
       userId,
       chapterId: chapter.id,
       revisionId: null,
-      title: `Review Mistakes: ${chapter.name}`,
+      title: `Error Journal Review: ${chapter.name}`,
       taskType: 'Error Review',
       estimatedMinutes: 20,
       priorityScore: score,
@@ -198,24 +224,35 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
     });
   }
 
-  // 3. Syllabus progress / Exam prep tasks for incomplete chapters
+  // 3. Syllabus progress / Checkpoint-driven tasks for incomplete chapters
   for (const chapter of chapters) {
     if (chapter.status === 'Completed') continue;
 
     const subject = subjectMap.get(chapter.subject_id);
     const subName = subject?.name || 'General';
-    const examInfo = subjectExamUrgency.get(chapter.subject_id);
+    const examInfo = chapterExamUrgency.get(chapter.id);
 
-    let baseScore = chapter.status === 'In Progress' ? 50 : 30;
-    let taskType: TaskType = 'New Chapter';
+    // Get subject-specific completion checklist
+    const checklist = getSubjectChecklist(subName, chapter.name);
+    const completedSet = new Set(chapter.checklist_progress || []);
+
+    // Find the next incomplete checkpoint
+    const nextCheckpoint = checklist.items.find((item) => !completedSet.has(item.id)) || checklist.items[0];
+
+    let baseScore = chapter.status === 'In Progress' ? 60 : 35;
+    let taskType: TaskType = examInfo ? 'Exam Prep' : 'New Chapter';
     const reasonParts: string[] = [];
 
     if (examInfo) {
-      baseScore += examInfo.urgency;
-      taskType = 'Exam Prep';
-      reasonParts.push(`${examInfo.examName} in ${examInfo.days}d`);
+      baseScore += examInfo.urgency * 1.25; // High urgency boost for chapters on upcoming exam
+      reasonParts.push(`In ${examInfo.examName} (${examInfo.days}d)`);
+    }
+
+    if (chapter.status === 'In Progress') {
+      baseScore += 25; // Prefer finishing started chapters
+      reasonParts.push(`Step ${checklist.items.indexOf(nextCheckpoint) + 1}/${checklist.items.length}`);
     } else {
-      reasonParts.push(chapter.status === 'In Progress' ? 'Continue chapter' : 'Start chapter');
+      reasonParts.push(`Start Step 1/${checklist.items.length}`);
     }
 
     const weakness = calculateWeaknessScore(chapter.confidence);
@@ -224,13 +261,17 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
       reasonParts.push(`Confidence: ${chapter.confidence}/5`);
     }
 
+    const checkpointTitle = `${nextCheckpoint.label}`;
+
     candidates.push({
+      id: `task-chk-${chapter.id}-${nextCheckpoint.id}`,
       userId,
       chapterId: chapter.id,
+      checkpointId: nextCheckpoint.id,
       revisionId: null,
-      title: `${taskType === 'Exam Prep' ? 'Prep' : 'Study'}: ${chapter.name}`,
+      title: `${checkpointTitle} · ${chapter.name}`,
       taskType,
-      estimatedMinutes: 30,
+      estimatedMinutes: nextCheckpoint.estimatedMinutes || 25,
       priorityScore: baseScore,
       priorityReason: reasonParts.join(' · '),
       subjectName: subName,
@@ -246,14 +287,13 @@ export function generateCandidateTasks(input: PlannerInput): CandidateTask[] {
 
 /**
  * Capacity-based plan allocation.
- * Strictly respects available study minutes.
+ * Strictly respects available study minutes and interleaves subjects when viable.
  */
 export function allocateDailyPlan(
   candidates: CandidateTask[],
   availableMinutes: number
 ): CandidateTask[] {
   if (availableMinutes <= 0) {
-    // If 0 minutes available, return top priority task as a focus highlight or empty
     return [];
   }
 
@@ -261,18 +301,16 @@ export function allocateDailyPlan(
   let currentMinutes = 0;
 
   for (const task of candidates) {
-    // Check if adding this task fits within remaining capacity
     if (currentMinutes + task.estimatedMinutes <= availableMinutes) {
       selectedTasks.push(task);
       currentMinutes += task.estimatedMinutes;
     } else {
-      // If we still have at least 15 minutes left, adapt the duration if helpful
       const remainingMinutes = availableMinutes - currentMinutes;
       if (remainingMinutes >= 15 && selectedTasks.length < 5) {
         selectedTasks.push({
           ...task,
           estimatedMinutes: remainingMinutes,
-          priorityReason: `${task.priorityReason} (time adjusted to fit)`,
+          priorityReason: `${task.priorityReason} (duration adjusted)`,
         });
         currentMinutes += remainingMinutes;
         break;
@@ -284,8 +322,6 @@ export function allocateDailyPlan(
     }
   }
 
-  // If no task fit because availableMinutes < task.estimatedMinutes,
-  // allow the #1 priority task with scaled minutes so user has work
   if (selectedTasks.length === 0 && candidates.length > 0 && availableMinutes > 0) {
     selectedTasks.push({
       ...candidates[0],
@@ -297,7 +333,7 @@ export function allocateDailyPlan(
 }
 
 /**
- * Main planning function: returns prioritized tasks up to capacity.
+ * Main planning function: returns prioritized checkpoint tasks up to capacity.
  */
 export function buildDailyPlan(input: PlannerInput): CandidateTask[] {
   const candidates = generateCandidateTasks(input);

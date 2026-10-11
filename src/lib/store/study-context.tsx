@@ -20,6 +20,7 @@ import {
   addDays,
 } from '../engine/revision';
 import { buildDailyPlan } from '../engine/planner';
+import { getSubjectChecklist } from '../engine/checklists';
 import { calculateProgress, OverallProgress } from '../engine/progress';
 import {
   fetchStudyDataAction,
@@ -27,6 +28,7 @@ import {
   deleteSubjectAction,
   createChapterAction,
   updateChapterStatusAction,
+  updateChapterChecklistAction,
   updateChapterConfidenceAction,
   deleteChapterAction,
   createExamAction,
@@ -58,9 +60,10 @@ interface StudyContextType {
   deleteSubject: (subjectId: string) => Promise<void>;
   addChapter: (subjectId: string, name: string) => Promise<void>;
   updateChapterStatus: (chapterId: string, status: ChapterStatus) => Promise<void>;
+  toggleChapterCheckpoint: (chapterId: string, checkpointId: string) => Promise<void>;
   updateChapterConfidence: (chapterId: string, confidence: number) => Promise<void>;
   deleteChapter: (chapterId: string) => Promise<void>;
-  addExam: (name: string, examDate: string, subjectIds: string[], notes?: string) => Promise<void>;
+  addExam: (name: string, examDate: string, subjectIds: string[], notes?: string, chapterIds?: string[]) => Promise<void>;
   markExamCompleted: (examId: string) => Promise<void>;
   deleteExam: (examId: string) => Promise<void>;
   completeRevision: (revisionId: string, difficulty: RevisionDifficulty) => Promise<void>;
@@ -75,6 +78,7 @@ interface StudyContextType {
   markErrorReviewed: (errorId: string) => Promise<void>;
   deleteError: (errorId: string) => Promise<void>;
   completeTask: (taskId: string) => void;
+  uncompleteTask: (taskId: string) => void;
   skipTask: (taskId: string) => void;
   resetToSampleData: () => Promise<void>;
 }
@@ -115,6 +119,27 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
           setExams(neonData.exams);
           setRevisions(neonData.revisions);
           setErrors(neonData.errors);
+
+          // Restore completed and skipped task IDs from localStorage
+          try {
+            const savedTasks = localStorage.getItem('study_os_completed_tasks');
+            if (savedTasks) {
+              setCompletedTaskIds(new Set(JSON.parse(savedTasks)));
+            }
+            const savedSkipped = localStorage.getItem('study_os_skipped_tasks');
+            if (savedSkipped) {
+              setSkippedTaskIds(new Set(JSON.parse(savedSkipped)));
+            }
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {
+              const parsed = JSON.parse(saved);
+              if (parsed.availableMinutes) setAvailableMinutesState(parsed.availableMinutes);
+              if (!savedTasks && parsed.completedTaskIds) {
+                setCompletedTaskIds(new Set(parsed.completedTaskIds));
+              }
+            }
+          } catch {}
+
           setIsLoaded(true);
           return;
         }
@@ -197,8 +222,8 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       errors,
     });
 
-    return candidateTasks.map((t, idx) => {
-      const taskId = `task-${t.chapterId || 'gen'}-${t.taskType}-${idx}`;
+    return candidateTasks.map((t) => {
+      const taskId = t.id || `task-${t.chapterId || 'gen'}-${t.taskType}`;
       let status: Task['status'] = 'Pending';
       if (completedTaskIds.has(taskId)) status = 'Completed';
       else if (skippedTaskIds.has(taskId)) status = 'Skipped';
@@ -335,6 +360,82 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const toggleChapterCheckpoint = async (chapterId: string, checkpointId: string) => {
+    const chapter = chapters.find((c) => c.id === chapterId);
+    if (!chapter) return;
+    const subject = subjects.find((s) => s.id === chapter.subject_id);
+    const checklist = getSubjectChecklist(subject?.name || '', chapter.name);
+
+    const currentProgress = new Set(chapter.checklist_progress || []);
+    const isAdding = !currentProgress.has(checkpointId);
+    if (isAdding) {
+      currentProgress.add(checkpointId);
+    } else {
+      currentProgress.delete(checkpointId);
+    }
+    const updatedProgress = Array.from(currentProgress);
+
+    // Compute updated status based on checklist rule
+    let nextStatus: ChapterStatus = 'Not Started';
+    if (updatedProgress.length === 0) {
+      nextStatus = 'Not Started';
+    } else if (updatedProgress.length >= checklist.items.length) {
+      nextStatus = 'Completed';
+    } else {
+      nextStatus = 'In Progress';
+    }
+
+    const now = new Date();
+    setChapters((prev) =>
+      prev.map((c) =>
+        c.id === chapterId
+          ? {
+              ...c,
+              checklist_progress: updatedProgress,
+              status: nextStatus,
+              completed_at: nextStatus === 'Completed' ? now.toISOString() : c.completed_at,
+              updated_at: now.toISOString(),
+            }
+          : c
+      )
+    );
+
+    // Keep completed task IDs in sync
+    const associatedTaskId = `task-chk-${chapterId}-${checkpointId}`;
+    if (isAdding) {
+      setCompletedTaskIds((prev) => {
+        const next = new Set(prev);
+        next.add(associatedTaskId);
+        try {
+          localStorage.setItem('study_os_completed_tasks', JSON.stringify(Array.from(next)));
+        } catch {}
+        return next;
+      });
+    }
+
+    // Optimistically schedule revisions if transitioned to Completed
+    if (nextStatus === 'Completed' && chapter.status !== 'Completed') {
+      const tempRevs = generateInitialRevisions(chapterId, now).map((r, i) => ({
+        ...r,
+        id: `rev-${chapterId}-${i}-${Date.now()}`,
+        created_at: now.toISOString(),
+      }));
+      setRevisions((prev) => [...prev, ...tempRevs]);
+    }
+
+    try {
+      const result = await updateChapterChecklistAction(chapterId, updatedProgress, nextStatus);
+      if (nextStatus === 'Completed' && result.newRevisions.length > 0) {
+        setRevisions((prev) => [
+          ...prev.filter((r) => r.chapter_id !== chapterId || !r.id.startsWith('rev-')),
+          ...result.newRevisions,
+        ]);
+      }
+    } catch (err) {
+      console.error('Failed to update chapter checklist in Neon:', err);
+    }
+  };
+
   const updateChapterConfidence = async (chapterId: string, confidence: number) => {
     const clamped = Math.max(1, Math.min(5, confidence));
     setChapters((prev) =>
@@ -361,7 +462,13 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
   };
 
   // EXAM ACTIONS
-  const addExam = async (name: string, examDate: string, subjectIds: string[], notes?: string) => {
+  const addExam = async (
+    name: string,
+    examDate: string,
+    subjectIds: string[],
+    notes?: string,
+    chapterIds?: string[]
+  ) => {
     const tempId = `exam-temp-${Date.now()}`;
     const optimisticExam: Exam = {
       id: tempId,
@@ -373,11 +480,12 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       subject_ids: subjectIds,
+      chapter_ids: chapterIds || [],
     };
     setExams((prev) => [...prev, optimisticExam]);
 
     try {
-      const created = await createExamAction(name, examDate, subjectIds, notes);
+      const created = await createExamAction(name, examDate, subjectIds, notes, chapterIds);
       setExams((prev) => prev.map((e) => (e.id === tempId ? created : e)));
     } catch (err) {
       console.error('Failed to save exam to Neon:', err);
@@ -516,6 +624,37 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
     setCompletedTaskIds((prev) => {
       const next = new Set(prev);
       next.add(taskId);
+      try {
+        localStorage.setItem('study_os_completed_tasks', JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
+
+    // If this is a chapter checkpoint task: task-chk-[chapterId]-[checkpointId]
+    if (taskId.startsWith('task-chk-')) {
+      const task = tasks.find((t) => t.id === taskId);
+      if (task && task.chapter_id) {
+        const chap = chapters.find((c) => c.id === task.chapter_id);
+        const sub = chap ? subjects.find((s) => s.id === chap.subject_id) : null;
+        if (chap && sub) {
+          const checklist = getSubjectChecklist(sub.name, chap.name);
+          const completedSet = new Set(chap.checklist_progress || []);
+          const nextCheckpoint = checklist.items.find((item) => !completedSet.has(item.id));
+          if (nextCheckpoint) {
+            toggleChapterCheckpoint(chap.id, nextCheckpoint.id);
+          }
+        }
+      }
+    }
+  };
+
+  const uncompleteTask = (taskId: string) => {
+    setCompletedTaskIds((prev) => {
+      const next = new Set(prev);
+      next.delete(taskId);
+      try {
+        localStorage.setItem('study_os_completed_tasks', JSON.stringify(Array.from(next)));
+      } catch {}
       return next;
     });
   };
@@ -524,6 +663,9 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
     setSkippedTaskIds((prev) => {
       const next = new Set(prev);
       next.add(taskId);
+      try {
+        localStorage.setItem('study_os_skipped_tasks', JSON.stringify(Array.from(next)));
+      } catch {}
       return next;
     });
   };
@@ -541,6 +683,10 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
         setCompletedTaskIds(new Set());
         setSkippedTaskIds(new Set());
         setAvailableMinutesState(90);
+        try {
+          localStorage.removeItem('study_os_completed_tasks');
+          localStorage.removeItem('study_os_skipped_tasks');
+        } catch {}
       }
     } catch (err) {
       console.error('Failed to reset sample data in Neon:', err);
@@ -554,6 +700,10 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
       setCompletedTaskIds(new Set());
       setSkippedTaskIds(new Set());
       setAvailableMinutesState(90);
+      try {
+        localStorage.removeItem('study_os_completed_tasks');
+        localStorage.removeItem('study_os_skipped_tasks');
+      } catch {}
     } finally {
       setIsSyncing(false);
     }
@@ -578,6 +728,7 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
         deleteSubject,
         addChapter,
         updateChapterStatus,
+        toggleChapterCheckpoint,
         updateChapterConfidence,
         deleteChapter,
         addExam,
@@ -588,6 +739,7 @@ export function StudyProvider({ children }: { children: React.ReactNode }) {
         markErrorReviewed,
         deleteError,
         completeTask,
+        uncompleteTask,
         skipTask,
         resetToSampleData,
       }}

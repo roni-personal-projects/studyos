@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS chapters (
   confidence INTEGER NOT NULL DEFAULT 3 CHECK (confidence >= 1 AND confidence <= 5),
   completed_at TIMESTAMPTZ,
   position INTEGER NOT NULL DEFAULT 0,
+  checklist_progress JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS exams (
   exam_date DATE NOT NULL,
   status TEXT NOT NULL DEFAULT 'Upcoming' CHECK (status IN ('Upcoming', 'Completed')),
   notes TEXT,
+  chapter_ids JSONB DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

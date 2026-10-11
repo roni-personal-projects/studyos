@@ -10,7 +10,7 @@ import { getDaysUntilExam } from '@/lib/engine/planner';
 import { AddExamModal } from '@/components/modals/add-exam-modal';
 
 export function ExamsPage() {
-  const { exams, subjects, todayStr, markExamCompleted, deleteExam } = useStudyStore();
+  const { exams, subjects, chapters, todayStr, markExamCompleted, deleteExam } = useStudyStore();
   const [showAddModal, setShowAddModal] = useState(false);
   const [filter, setFilter] = useState<'Upcoming' | 'Completed' | 'All'>('Upcoming');
 
@@ -134,20 +134,70 @@ export function ExamsPage() {
                     </Badge>
                   </div>
 
-                  {/* Linked Subjects */}
-                  <div className="flex flex-wrap gap-1.5 mt-3">
-                    {subjectNames.map((name) => (
-                      <span
-                        key={name}
-                        className="px-2 py-0.5 rounded-md text-[11px] bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 font-medium"
-                      >
-                        {name}
-                      </span>
-                    ))}
+                  {/* Linked Subjects & Chapters */}
+                  <div className="space-y-2 mt-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      {subjectNames.map((name) => (
+                        <span
+                          key={name}
+                          className="px-2 py-0.5 rounded-md text-[11px] bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 font-medium"
+                        >
+                          {name}
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Syllabus Chapter Coverage */}
+                    {(() => {
+                      const examChapters =
+                        exam.chapter_ids && exam.chapter_ids.length > 0
+                          ? chapters.filter((c) => exam.chapter_ids?.includes(c.id))
+                          : chapters.filter((c) => (exam.subject_ids || []).includes(c.subject_id));
+                      const completedCount = examChapters.filter((c) => c.status === 'Completed').length;
+                      const pct = examChapters.length > 0 ? Math.round((completedCount / examChapters.length) * 100) : 0;
+
+                      return (
+                        <div className="p-2.5 rounded-lg border border-zinc-100 dark:border-zinc-800/80 bg-zinc-50/60 dark:bg-zinc-800/30 space-y-1.5">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                              Syllabus Readiness
+                            </span>
+                            <span className="text-[11px] font-mono text-zinc-500">
+                              {completedCount}/{examChapters.length} chapters ({pct}%)
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-indigo-500 rounded-full transition-all"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+
+                          {examChapters.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-1 max-h-24 overflow-y-auto">
+                              {examChapters.map((chap) => (
+                                <span
+                                  key={chap.id}
+                                  className={`px-1.5 py-0.5 rounded text-[10px] ${
+                                    chap.status === 'Completed'
+                                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                                      : chap.status === 'In Progress'
+                                      ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                                      : 'bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400'
+                                  }`}
+                                >
+                                  {chap.name}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {exam.notes && (
-                    <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-3 p-2.5 rounded-lg bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-100 dark:border-zinc-800">
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400 mt-2 p-2 rounded-lg bg-zinc-50 dark:bg-zinc-800/40 border border-zinc-100 dark:border-zinc-800">
                       {exam.notes}
                     </p>
                   )}
